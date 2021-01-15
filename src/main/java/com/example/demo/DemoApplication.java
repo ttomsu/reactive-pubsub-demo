@@ -15,6 +15,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import lombok.RequiredArgsConstructor;
+import lombok.experimental.Delegate;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Configuration;
@@ -39,7 +41,7 @@ public class DemoApplication {
     Subscriber.newBuilder(subscriptionName, ms)
         .setCredentialsProvider(GoogleCredentials::getApplicationDefault)
         .setFlowControlSettings(FlowControlSettings.newBuilder()
-            .setMaxOutstandingElementCount(10L)
+            .setMaxOutstandingElementCount(20L)
             .build())
         .build().startAsync().awaitRunning();
 
@@ -51,34 +53,44 @@ public class DemoApplication {
         .build();
 
     ms.goFlux()
-        .map(m -> new String(m.getData().toByteArray(), StandardCharsets.UTF_8))
+        .map(m -> {
+          m.ack();
+          return new String(m.getData().toByteArray(), StandardCharsets.UTF_8);
+        })
         .log()
         .subscribe();
 
     AtomicInteger i = new AtomicInteger(0);
-    Flux.range(0, 30)
+    Flux.range(0, 100)
         .log()
-        .subscribe(j -> {
+        .subscribe(j ->
             p.publish(PubsubMessage.newBuilder()
               .setData(ByteString.copyFromUtf8("message num: " + j))
-              .build());
-        });
+              .build())
+        );
 
   }
 
   @Component
   public static class MySubscriber implements MessageReceiver {
 
-    private Consumer<PubsubMessage> messageConsumer;
+    private Consumer<AckablePubsubMessage> messageConsumer;
 
-    public Flux<PubsubMessage> goFlux() {
+    public Flux<AckablePubsubMessage> goFlux() {
       return Flux.create(sink -> MySubscriber.this.messageConsumer = sink::next);
     }
 
     @Override
-    public void receiveMessage(PubsubMessage message, AckReplyConsumer consumer) {
-      consumer.ack();
-      messageConsumer.accept(message);
+    public void receiveMessage(PubsubMessage message, AckReplyConsumer acker) {
+      messageConsumer.accept(new AckablePubsubMessage(message, acker));
     }
+  }
+
+  @RequiredArgsConstructor
+  public static class AckablePubsubMessage implements AckReplyConsumer {
+    @Delegate
+    private final PubsubMessage pubsubMessage;
+    @Delegate
+    private final AckReplyConsumer acker;
   }
 }
