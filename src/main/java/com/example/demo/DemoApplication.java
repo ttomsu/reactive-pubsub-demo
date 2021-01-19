@@ -2,7 +2,6 @@ package com.example.demo;
 
 import com.google.api.gax.batching.BatchingSettings;
 import com.google.api.gax.batching.FlowControlSettings;
-import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.pubsub.v1.AckReplyConsumer;
 import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.Publisher;
@@ -13,7 +12,6 @@ import com.google.pubsub.v1.ProjectTopicName;
 import com.google.pubsub.v1.PubsubMessage;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import lombok.experimental.Delegate;
@@ -38,37 +36,34 @@ public class DemoApplication {
     final String subscriptionName = ProjectSubscriptionName.format(project, topicName + "-subscription");
 
     MySubscriber ms = new MySubscriber();
-    Subscriber.newBuilder(subscriptionName, ms)
-        .setCredentialsProvider(GoogleCredentials::getApplicationDefault)
+    Subscriber s = Subscriber.newBuilder(subscriptionName, ms)
         .setFlowControlSettings(FlowControlSettings.newBuilder()
-            .setMaxOutstandingElementCount(20L)
+            .setMaxOutstandingElementCount(500L)
             .build())
-        .build().startAsync().awaitRunning();
+        .build();
+    s.startAsync().awaitRunning();
 
     Publisher p  = Publisher.newBuilder(fullTopic)
-        .setCredentialsProvider(GoogleCredentials::getApplicationDefault)
         .setBatchingSettings(BatchingSettings.newBuilder()
-            .setElementCountThreshold(5L)
+            .setElementCountThreshold(1000L)
             .build())
         .build();
 
-    ms.goFlux()
+    Flux.range(0, 1000)
+        .log()
+        .subscribe(j ->
+            p.publish(PubsubMessage.newBuilder()
+                .setData(ByteString.copyFromUtf8("message num: " + j))
+                .build())
+        );
+
+    ms.getMessages()
         .map(m -> {
           m.ack();
           return new String(m.getData().toByteArray(), StandardCharsets.UTF_8);
         })
         .log()
         .subscribe();
-
-    AtomicInteger i = new AtomicInteger(0);
-    Flux.range(0, 100)
-        .log()
-        .subscribe(j ->
-            p.publish(PubsubMessage.newBuilder()
-              .setData(ByteString.copyFromUtf8("message num: " + j))
-              .build())
-        );
-
   }
 
   @Component
@@ -76,7 +71,7 @@ public class DemoApplication {
 
     private Consumer<AckablePubsubMessage> messageConsumer;
 
-    public Flux<AckablePubsubMessage> goFlux() {
+    public Flux<AckablePubsubMessage> getMessages() {
       return Flux.create(sink -> MySubscriber.this.messageConsumer = sink::next);
     }
 
